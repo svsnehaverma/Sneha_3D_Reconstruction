@@ -1,16 +1,15 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, ImagePlus, UploadCloud, PlayCircle, Camera, Info, Download, RotateCcw, University } from "lucide-react";
+import { Loader2, ImagePlus, UploadCloud, PlayCircle, Camera, Info, Download, RotateCcw, GraduationCap, Image as ImageIcon } from "lucide-react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-// --- Small utility to read files as data URLs ---
+// --- utils ---
 function readAsDataURL(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -22,29 +21,37 @@ function readAsDataURL(file) {
 
 // Export a simple PLY string from point cloud [{x,y,z,r,g,b}]
 function exportPLY(points) {
-  let header = `ply\nformat ascii 1.0\n` +
-    `element vertex ${points.length}\n` +
-    `property float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n`;
-  const body = points.map(p => `${p.x} ${p.y} ${p.z} ${p.r} ${p.g} ${p.b}`).join("\n");
-  return header + body + "\n";
+  let header = `ply
+format ascii 1.0
+` +
+    `element vertex ${points.length}
+` +
+    `property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+end_header
+`;
+  const body = points.map(p => `${p.x} ${p.y} ${p.z} ${p.r} ${p.g} ${p.b}`).join("
+");
+  return header + body + "
+";
 }
 
-// Build a quick pseudo-3D from the first image: a height map based on brightness (for instant demo)
-async function quickReliefPointCloudFromImage(imgDataUrl, sampleStep = 8, zScale = 0.5) {
+// Build a quick pseudo-3D from an image: a relief based on brightness (instant demo)
+async function quickReliefPointCloudFromImage(imgDataUrl, sampleStep = 6, zScale = 0.7) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
       const w = img.width, h = img.height;
-      // constrain size for performance
-      const maxSide = 640;
+      const maxSide = 960;
       let scale = 1;
-      if (Math.max(w, h) > maxSide) {
-        scale = maxSide / Math.max(w, h);
-      }
-      const W = Math.round(w * scale);
-      const H = Math.round(h * scale);
+      if (Math.max(w, h) > maxSide) scale = maxSide / Math.max(w, h);
+      const W = Math.round(w * scale), H = Math.round(h * scale);
       canvas.width = W; canvas.height = H;
       ctx.drawImage(img, 0, 0, W, H);
       const { data } = ctx.getImageData(0, 0, W, H);
@@ -53,10 +60,9 @@ async function quickReliefPointCloudFromImage(imgDataUrl, sampleStep = 8, zScale
         for (let x = 0; x < W; x += sampleStep) {
           const i = (y * W + x) * 4;
           const r = data[i], g = data[i+1], b = data[i+2];
-          const brightness = (0.299*r + 0.587*g + 0.114*b) / 255; // 0..1
-          // Center the point cloud around origin
-          const X = x - W/2;
-          const Y = H/2 - y;
+          const brightness = (0.299*r + 0.587*g + 0.114*b) / 255;
+          const X = (x - W/2);
+          const Y = (H/2 - y);
           const Z = (brightness - 0.5) * (W+H)/2 * zScale;
           points.push({ x: X, y: Y, z: Z, r, g, b });
         }
@@ -67,14 +73,11 @@ async function quickReliefPointCloudFromImage(imgDataUrl, sampleStep = 8, zScale
   });
 }
 
-// Three.js viewer component
-function PointCloudViewer({ points, texturedPlaneDataUrl }) {
+// ---- 3D Viewer ----
+function PointCloudViewer({ points, texturedPlaneDataUrl, onDropTexture }) {
   const mountRef = useRef(null);
-  const rendererRef = useRef(null);
-  const sceneRef = useRef(null);
-  const cameraRef = useRef(null);
-  const controlsRef = useRef(null);
   const meshRef = useRef(null);
+  const planeRef = useRef(null);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -87,93 +90,77 @@ function PointCloudViewer({ points, texturedPlaneDataUrl }) {
     mount.appendChild(renderer.domElement);
 
     const camera = new THREE.PerspectiveCamera(45, mount.clientWidth / mount.clientHeight, 1, 10000);
-    camera.position.set(0, 0, 800);
+    camera.position.set(0, 120, 900);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    // Lights
-    const light = new THREE.DirectionalLight(0xffffff, 0.8);
+    const light = new THREE.DirectionalLight(0xffffff, 0.85);
     light.position.set(1, 1, 1);
     scene.add(light);
     scene.add(new THREE.AmbientLight(0xffffff, 0.4));
 
-    // Grid + axes helpers
-    const grid = new THREE.GridHelper(1000, 20, 0x444444, 0x222222);
-    grid.position.y = -300;
+    const grid = new THREE.GridHelper(1400, 30, 0x444444, 0x222222);
+    grid.position.y = -320;
     scene.add(grid);
-    const axes = new THREE.AxesHelper(150);
+
+    const axes = new THREE.AxesHelper(160);
+    axes.material.transparent = true; axes.material.opacity = 0.6;
     scene.add(axes);
 
-    // Add textured plane of original image (for visual comparison)
-    if (texturedPlaneDataUrl) {
-      const tex = new THREE.TextureLoader().load(texturedPlaneDataUrl);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      const plane = new THREE.Mesh(
-        new THREE.PlaneGeometry(400, 300),
-        new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })
-      );
-      plane.position.set(-260, 120, -50);
-      plane.rotation.y = Math.PI * -0.12;
-      scene.add(plane);
-    }
+    // reference image plane (will update texture when user drops an image)
+    const tex = texturedPlaneDataUrl ? new THREE.TextureLoader().load(texturedPlaneDataUrl) : null;
+    const plane = new THREE.Mesh(
+      new THREE.PlaneGeometry(600, 360),
+      new THREE.MeshBasicMaterial({ map: tex, color: tex ? 0xffffff : 0x888888, side: THREE.DoubleSide })
+    );
+    plane.position.set(-420, 60, -80);
+    plane.rotation.y = Math.PI * -0.12;
+    scene.add(plane);
+    planeRef.current = plane;
 
-    // Create point cloud geometry
+    // initial cloud (empty, will be set below or via effect)
     const geometry = new THREE.BufferGeometry();
-    if (points && points.length) {
-      const positions = new Float32Array(points.length * 3);
-      const colors = new Float32Array(points.length * 3);
-      for (let i = 0; i < points.length; i++) {
-        const p = points[i];
-        positions[i*3] = p.x;
-        positions[i*3+1] = p.y;
-        positions[i*3+2] = p.z;
-        colors[i*3] = p.r / 255;
-        colors[i*3+1] = p.g / 255;
-        colors[i*3+2] = p.b / 255;
-      }
-      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    }
-
-    const material = new THREE.PointsMaterial({ size: 3, vertexColors: true });
+    const material = new THREE.PointsMaterial({ size: 2.5, vertexColors: true });
     const pointsMesh = new THREE.Points(geometry, material);
     scene.add(pointsMesh);
     meshRef.current = pointsMesh;
 
     const onResize = () => {
-      if (!mount) return;
-      const { clientWidth, clientHeight } = mount;
-      renderer.setSize(clientWidth, clientHeight);
-      camera.aspect = clientWidth / clientHeight;
+      renderer.setSize(mount.clientWidth, mount.clientHeight);
+      camera.aspect = mount.clientWidth / mount.clientHeight;
       camera.updateProjectionMatrix();
     };
     window.addEventListener("resize", onResize);
 
-    const animate = () => {
-      controls.update();
-      renderer.render(scene, camera);
-      requestAnimationFrame(animate);
+    // Drag & drop onto viewer to change the reference texture quickly
+    const prevent = (e) => { e.preventDefault(); };
+    const handleDrop = async (e) => {
+      e.preventDefault();
+      const f = e.dataTransfer.files?.[0];
+      if (f && f.type.startsWith("image/")) {
+        const url = await readAsDataURL(f);
+        if (onDropTexture) onDropTexture(url);
+      }
     };
-    animate();
+    mount.addEventListener('dragover', prevent);
+    mount.addEventListener('drop', handleDrop);
 
-    rendererRef.current = renderer;
-    sceneRef.current = scene;
-    cameraRef.current = camera;
-    controlsRef.current = controls;
+    const animate = () => { controls.update(); renderer.render(scene, camera); requestAnimationFrame(animate); };
+    animate();
 
     return () => {
       window.removeEventListener("resize", onResize);
-      if (renderer) {
-        renderer.dispose();
-        mount.removeChild(renderer.domElement);
-      }
+      mount.removeEventListener('dragover', prevent);
+      mount.removeEventListener('drop', handleDrop);
+      renderer.dispose();
+      mount.removeChild(renderer.domElement);
       scene.clear();
     };
   }, []);
 
+  // update cloud
   useEffect(() => {
-    // Replace geometry when points change
     if (!meshRef.current) return;
     const geometry = new THREE.BufferGeometry();
     if (points && points.length) {
@@ -181,12 +168,8 @@ function PointCloudViewer({ points, texturedPlaneDataUrl }) {
       const colors = new Float32Array(points.length * 3);
       for (let i = 0; i < points.length; i++) {
         const p = points[i];
-        positions[i*3] = p.x;
-        positions[i*3+1] = p.y;
-        positions[i*3+2] = p.z;
-        colors[i*3] = p.r / 255;
-        colors[i*3+1] = p.g / 255;
-        colors[i*3+2] = p.b / 255;
+        positions[i*3] = p.x; positions[i*3+1] = p.y; positions[i*3+2] = p.z;
+        colors[i*3] = p.r/255; colors[i*3+1] = p.g/255; colors[i*3+2] = p.b/255;
       }
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -195,133 +178,136 @@ function PointCloudViewer({ points, texturedPlaneDataUrl }) {
     meshRef.current.geometry = geometry;
   }, [points]);
 
-  return <div ref={mountRef} className="w-full h-[520px] rounded-2xl border border-white/10"/>;
+  // update texture plane
+  useEffect(() => {
+    if (!planeRef.current) return;
+    if (!texturedPlaneDataUrl) { planeRef.current.material.map = null; planeRef.current.material.color.set(0x888888); planeRef.current.material.needsUpdate = true; return; }
+    const loader = new THREE.TextureLoader();
+    loader.load(texturedPlaneDataUrl, (tex) => {
+      planeRef.current.material.map = tex;
+      planeRef.current.material.color.set(0xffffff);
+      planeRef.current.material.needsUpdate = true;
+    });
+  }, [texturedPlaneDataUrl]);
+
+  return (
+    <div ref={mountRef} className="w-full h-[560px] rounded-2xl border border-white/10" title="Drop a photo here to update the reference image"/>
+  );
 }
 
 export default function App() {
-  const [files, setFiles] = useState([]); // File[]
-  const [imageUrls, setImageUrls] = useState([]); // string[]
+  const [images, setImages] = useState([]); // all selected image dataURLs (keep order)
+  const [referenceImg, setReferenceImg] = useState(""); // shown on the big left preview & as texture plane
+  const [points, setPoints] = useState([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [points, setPoints] = useState([]); // point cloud for demo
   const [downloadHref, setDownloadHref] = useState("");
 
   const handleFiles = useCallback(async (list) => {
-    const arr = Array.from(list || []);
-    const images = arr.filter(f => f.type.startsWith("image/"));
-    setFiles(images);
-    const urls = await Promise.all(images.map(readAsDataURL));
-    setImageUrls(urls);
-    setPoints([]);
-    setDownloadHref("");
+    const arr = Array.from(list || []).filter(f => f.type.startsWith("image/"));
+    if (!arr.length) return;
+    const urls = await Promise.all(arr.map(readAsDataURL));
+    setImages(urls);
+    // UX: first picked image is treated as 3D source; last picked is shown as reference panel
+    setReferenceImg(urls[urls.length - 1]);
+    setPoints([]); setDownloadHref(""); setProgress(0);
   }, []);
 
-  const onDrop = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer.files && e.dataTransfer.files.length) {
-      handleFiles(e.dataTransfer.files);
-    }
-  }, [handleFiles]);
-
-  const onBrowse = useCallback((e) => {
-    if (e.target.files && e.target.files.length) {
-      handleFiles(e.target.files);
-    }
-  }, [handleFiles]);
-
-  useEffect(() => {
-    const onDragOver = (e) => { e.preventDefault(); };
-    window.addEventListener("dragover", onDragOver);
-    return () => window.removeEventListener("dragover", onDragOver);
-  }, []);
+  const onDropGlobal = useCallback((e) => { e.preventDefault(); if (e.dataTransfer.files?.length) handleFiles(e.dataTransfer.files); }, [handleFiles]);
+  useEffect(() => { const f=(e)=>e.preventDefault(); window.addEventListener("dragover", f); window.addEventListener("drop", f); return ()=>{window.removeEventListener("dragover", f); window.removeEventListener("drop", f);} }, []);
 
   const generateQuick3D = useCallback(async () => {
-    if (!imageUrls.length) return;
-    setBusy(true);
-    setProgress(5);
-    // Step 1: build quick relief from first image
-    const pts = await quickReliefPointCloudFromImage(imageUrls[0], 6, 0.7);
-    setProgress(70);
-    // Step 2: (placeholder) optional denoise / normalization
-    const normalized = pts.map(p => ({ ...p, z: p.z }));
-    setPoints(normalized);
-    setProgress(90);
-    // Step 3: create PLY for download
-    const ply = exportPLY(normalized);
+    if (!images.length) return;
+    setBusy(true); setProgress(10);
+    // Treat the FIRST image as the 3D reconstruction source (your point‑cloud screenshot)
+    const pts = await quickReliefPointCloudFromImage(images[0], 5, 0.8);
+    setProgress(75);
+    setPoints(pts);
+    const ply = exportPLY(pts);
     const blob = new Blob([ply], { type: 'text/plain' });
-    const href = URL.createObjectURL(blob);
-    setDownloadHref(href);
-    setProgress(100);
-    setBusy(false);
-  }, [imageUrls]);
+    setDownloadHref(URL.createObjectURL(blob));
+    setProgress(100); setBusy(false);
+  }, [images]);
 
-  const resetAll = () => {
-    setFiles([]);
-    setImageUrls([]);
-    setPoints([]);
-    setDownloadHref("");
-    setProgress(0);
-  };
+  const resetAll = () => { setImages([]); setReferenceImg(""); setPoints([]); setDownloadHref(""); setProgress(0); };
+
+  // convenience: allow dropping a new texture directly into the 3D viewer
+  const handleDropTexture = (url) => { setReferenceImg(url); };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-950 to-black text-slate-100">
+    <div onDrop={onDropGlobal} className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-950 to-black text-slate-100">
       <header className="sticky top-0 z-20 backdrop-blur bg-slate-900/60 border-b border-white/10">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600/90 flex items-center justify-center shadow-lg shadow-indigo-600/40">
-              <University className="w-6 h-6" />
+              <GraduationCap className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-xl font-semibold">Structure‑from‑Motion (SfM) – Web Lab</h1>
-              <p className="text-xs text-slate-400">Developed by Newcastle University • Client‑side demo</p>
+              <h1 className="text-xl font-semibold">Structure‑from‑Motion (SfM) — Professional Web Demo</h1>
+              <p className="text-xs text-slate-400">Developed by Newcastle University • Robinson Library example</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="bg-white/5">Beta</Badge>
-          </div>
+          <Badge variant="outline" className="bg-white/5">Beta demo</Badge>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1 space-y-4">
+      <main className="max-w-7xl mx-auto px-4 py-6 grid grid-cols-1 xl:grid-cols-3 gap-6">
+        {/* LEFT: Reference image panel (looks like the second screenshot) */}
+        <div className="xl:col-span-1 space-y-4">
+          <Card className="bg-white/5 border-white/10 overflow-hidden">
+            <CardContent className="p-0">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+                <div className="flex items-center gap-2"><ImageIcon className="w-4 h-4"/><span className="font-medium">Reference Image (displayed on screen)</span></div>
+                <span className="text-xs text-slate-400">Drop an image here or in the viewer</span>
+              </div>
+              <label className="block group relative cursor-pointer">
+                <Input type="file" accept="image/*" multiple onChange={(e)=>handleFiles(e.target.files)} className="hidden" />
+                <div className="h-[360px] bg-black grid place-items-center">
+                  {referenceImg ? (
+                    <img src={referenceImg} alt="reference" className="max-h-[360px] w-full object-cover"/>
+                  ) : (
+                    <div className="text-center text-slate-400">
+                      <UploadCloud className="w-10 h-10 mx-auto mb-2"/>
+                      <p>Drag & drop the campus facade image (e.g., Robinson Library)</p>
+                      <p className="text-xs text-slate-500">This will be shown beside the 3D reconstruction</p>
+                    </div>
+                  )}
+                </div>
+              </label>
+            </CardContent>
+          </Card>
+
           <Card className="bg-white/5 border-white/10">
             <CardContent className="p-4 space-y-4">
-              <h2 className="text-lg font-semibold flex items-center gap-2"><Camera className="w-5 h-5"/> Images</h2>
-              <div
-                onDrop={onDrop}
-                className="rounded-2xl border border-dashed border-white/20 bg-white/5 p-4 text-center flex flex-col items-center gap-3 hover:border-indigo-400/60 transition"
-              >
+              <h2 className="text-lg font-semibold flex items-center gap-2"><Camera className="w-5 h-5"/> Upload images</h2>
+              <div className="rounded-2xl border border-dashed border-white/20 bg-white/5 p-4 text-center flex flex-col items-center gap-3">
                 <UploadCloud className="w-8 h-8 text-slate-300"/>
-                <p className="text-sm text-slate-300">Drag & drop your photos here</p>
-                <p className="text-xs text-slate-500">or</p>
-                <div>
-                  <label className="inline-flex items-center gap-2 cursor-pointer">
-                    <Input type="file" accept="image/*" multiple onChange={onBrowse} className="hidden" />
-                    <span className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 transition text-sm flex items-center gap-2"><ImagePlus className="w-4 h-4"/> Browse</span>
-                  </label>
-                </div>
-                <p className="text-[11px] text-slate-500">Use 5–20 photos of the same object/scene for best results (true SfM requires feature matching across views).</p>
+                <p className="text-sm text-slate-300">Drop your files anywhere on the page</p>
+                <p className="text-xs text-slate-500">Order matters: <b>1st</b> = 3D source (point‑cloud screenshot), <b>last</b> = reference photo</p>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <Input type="file" accept="image/*" multiple onChange={(e)=>handleFiles(e.target.files)} className="hidden" />
+                  <span className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 transition text-sm flex items-center gap-2"><ImagePlus className="w-4 h-4"/> Browse</span>
+                </label>
               </div>
 
-              {imageUrls.length > 0 && (
+              {images.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-medium">Selected ({imageUrls.length})</h3>
+                    <h3 className="text-sm font-medium">Selected ({images.length})</h3>
                     <Button variant="ghost" size="sm" onClick={resetAll} className="text-slate-300 hover:text-white"><RotateCcw className="w-4 h-4 mr-1"/>Reset</Button>
                   </div>
-                  <div className="grid grid-cols-4 gap-2 max-h-48 overflow-auto pr-1">
-                    {imageUrls.map((src, idx) => (
-                      <img key={idx} src={src} alt={`img-${idx}`} className="w-full h-20 object-cover rounded-lg border border-white/10"/>
+                  <div className="grid grid-cols-4 gap-2 max-h-40 overflow-auto pr-1">
+                    {images.map((src, idx) => (
+                      <img key={idx} src={src} alt={`img-${idx}`} className={`w-full h-20 object-cover rounded-lg border ${idx===0? 'border-green-500/70' : 'border-white/10'}`} title={idx===0? '3D source' : 'reference / extra'} />
                     ))}
                   </div>
                 </div>
               )}
 
-              <div className="pt-2 flex items-center gap-2">
-                <Button onClick={generateQuick3D} disabled={!imageUrls.length || busy} className="gap-2">
+              <div className="pt-1 flex items-center gap-2">
+                <Button onClick={generateQuick3D} disabled={!images.length || busy} className="gap-2">
                   {busy ? <Loader2 className="w-4 h-4 animate-spin"/> : <PlayCircle className="w-4 h-4"/>}
-                  Generate 3D (Quick Preview)
+                  Build 3D Preview
                 </Button>
                 {downloadHref && (
                   <a href={downloadHref} download="preview_pointcloud.ply" className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-sm flex items-center gap-2 border border-white/10">
@@ -329,50 +315,31 @@ export default function App() {
                   </a>
                 )}
               </div>
-
               {busy && (
-                <div className="pt-2">
+                <div className="pt-1">
                   <Progress value={progress} className="h-2" />
-                  <p className="text-xs text-slate-400 mt-2">Processing images… (client-side demo)</p>
+                  <p className="text-xs text-slate-400 mt-2">Processing… (client‑side demo)</p>
                 </div>
               )}
-            </CardContent>
-          </Card>
 
-          <Alert className="bg-indigo-950/60 border-indigo-500/30">
-            <AlertTitle className="flex items-center gap-2"><Info className="w-4 h-4"/> What this demo does</AlertTitle>
-            <AlertDescription className="text-sm text-slate-300">
-              This is a <span className="font-semibold">browser‑only</span> prototype. The <em>Generate 3D (Quick Preview)</em> creates a colored point cloud by turning the first image into a height‑map based on brightness. 
-              It is <span className="font-semibold">not full SfM</span>.
-              For true Structure‑from‑Motion (feature detection, matching, camera pose estimation, triangulation, bundle adjustment, meshing), connect a backend (e.g. COLMAP/OpenMVG via WebAssembly or server) using the API spec below.
-            </AlertDescription>
-          </Alert>
-
-          <Card className="bg-white/5 border-white/10">
-            <CardContent className="p-4 space-y-2">
-              <h3 className="text-sm font-semibold">Backend API Contract (for real SfM)</h3>
-              <pre className="text-xs whitespace-pre-wrap bg-black/40 p-3 rounded-xl border border-white/10">
-POST /api/sfm/jobs
-Content-Type: multipart/form-data
-files: images[]
---&gt; returns {{ jobId }}
-
-GET /api/sfm/jobs/:id
---&gt; {{ status: 'queued|running|done|error', result: {{ plyUrl, objUrl, mtlUrl, textureUrl }} }}
-
-/* Swap generateQuick3D() to call POST, then poll GET until done, and load the PLY/OBJ into the viewer. */
-              </pre>
+              <Alert className="bg-indigo-950/60 border-indigo-500/30">
+                <AlertTitle className="flex items-center gap-2"><Info className="w-4 h-4"/> Professional mode</AlertTitle>
+                <AlertDescription className="text-sm text-slate-300">
+                  For a true SfM pipeline (feature matching, pose estimation, bundle adjustment, multi‑view, dense MVS), connect this UI to a backend such as <span className="font-semibold">COLMAP/OpenSfM</span> and stream reconstructed points/meshes into the viewer.
+                </AlertDescription>
+              </Alert>
             </CardContent>
           </Card>
         </div>
 
-        <div className="lg:col-span-2 space-y-4">
+        {/* RIGHT: 3D viewer */}
+        <div className="xl:col-span-2 space-y-4">
           <Card className="bg-white/5 border-white/10">
             <CardContent className="p-0">
               <div className="p-4 border-b border-white/10 flex items-center justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold">3D Viewer</h2>
-                  <p className="text-xs text-slate-400">Pan: drag • Zoom: wheel • Rotate: right‑drag</p>
+                  <h2 className="text-lg font-semibold">SfM 3D Reconstruction — Presentation View</h2>
+                  <p className="text-xs text-slate-400">Tip: Drop the <em>facade photo</em> directly onto the viewer to update the side reference.</p>
                 </div>
                 {points?.length ? (
                   <Badge className="bg-green-700/60 border border-green-500/50">Point Cloud: {points.length.toLocaleString()} pts</Badge>
@@ -381,58 +348,16 @@ GET /api/sfm/jobs/:id
                 )}
               </div>
               <div className="p-3">
-                <PointCloudViewer points={points} texturedPlaneDataUrl={imageUrls[0]} />
+                <PointCloudViewer points={points} texturedPlaneDataUrl={referenceImg} onDropTexture={handleDropTexture} />
               </div>
             </CardContent>
           </Card>
 
-          <Tabs defaultValue="about" className="w-full">
-            <TabsList>
-              <TabsTrigger value="about">About</TabsTrigger>
-              <TabsTrigger value="how">How it Works</TabsTrigger>
-              <TabsTrigger value="credits">Credits</TabsTrigger>
-            </TabsList>
-            <TabsContent value="about" className="space-y-2">
-              <Card className="bg-white/5 border-white/10">
-                <CardContent className="p-4 text-sm leading-relaxed text-slate-200">
-                  <p>
-                    <strong>Structure‑from‑Motion (SfM)</strong> recovers 3D structure and camera motion from overlapping 2D images. This web app provides a modern interface for uploading photos, monitoring processing, and viewing results entirely in the browser.
-                  </p>
-                  <p className="mt-2">
-                    <strong>Developed by Newcastle University</strong> for research and teaching demos. The quick preview here is a height‑map transformation for instant feedback; swap in a server or WebAssembly build of COLMAP/OpenMVG for full reconstructions.
-                  </p>
-                </CardContent>
-              </Card>
-            </TabsContent>
-            <TabsContent value="how" className="space-y-2">
-              <Card className="bg-white/5 border-white/10">
-                <CardContent className="p-4 text-sm text-slate-200">
-                  <ol className="list-decimal ml-5 space-y-1">
-                    <li>Upload 5–20 photos with good overlap and varying viewpoints.</li>
-                    <li>Client shows a <em>Quick Preview</em> (height‑map point cloud) from the first image.</li>
-                    <li>In production, the client would send images to an SfM engine (features → matches → poses → triangulation → bundle adjustment → meshing).</li>
-                    <li>Results (PLY/OBJ + textures) are streamed back and displayed in the viewer.</li>
-                  </ol>
-                </CardContent>
-              </Card>
-            </TabsContent>
-            <TabsContent value="credits" className="space-y-2">
-              <Card className="bg-white/5 border-white/10">
-                <CardContent className="p-4 text-sm text-slate-200">
-                  <p>UI: React + Tailwind + shadcn/ui • 3D: three.js • Controls: OrbitControls</p>
-                  <p className="mt-1">Copyright © {new Date().getFullYear()} Newcastle University. All rights reserved.</p>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
+          <p className="text-xs text-slate-400 text-center">
+            © {new Date().getFullYear()} Newcastle University — School of Computing. Built by Dr. Sneha Verma & collaborators.
+          </p>
         </div>
       </main>
-
-      <footer className="max-w-6xl mx-auto px-4 pb-8 text-xs text-slate-500">
-        <p>
-          Disclaimer: This page runs solely in your browser. True SfM requires a dedicated engine (COLMAP/OpenMVG/OpenSfM). Hook up the provided API contract to enable end‑to‑end reconstructions and texture meshes.
-        </p>
-      </footer>
     </div>
   );
 }
